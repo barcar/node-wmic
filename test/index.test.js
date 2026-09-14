@@ -7,14 +7,21 @@ let wmic;
 
 describe('node-wmic PowerShell Refactor', () => {
   let sandbox;
+  const originalPowerShellPath = process.env.POWERSHELL_PATH;
 
   beforeEach(() => {
     sandbox = sinon.createSandbox();
+    delete process.env.POWERSHELL_PATH;
     // Clear the require cache to reload the module with mocked execFile
     delete require.cache[require.resolve('../index.js')];
   });
 
   afterEach(() => {
+    if (originalPowerShellPath === undefined) {
+      delete process.env.POWERSHELL_PATH;
+    } else {
+      process.env.POWERSHELL_PATH = originalPowerShellPath;
+    }
     sandbox.restore();
   });
 
@@ -60,8 +67,22 @@ describe('node-wmic PowerShell Refactor', () => {
       setTimeout(() => {
         const callArgs = stub.getCall(0).args;
         const psPath = callArgs[0];
-        assert(psPath.includes('powershell'), 'Should use powershell.exe');
+        assert(['pwsh.exe', 'powershell.exe'].includes(psPath), 'Should use a PowerShell executable');
         assert(!psPath.includes('WMIC'), 'Should not use WMIC');
+        done();
+      }, 100);
+    });
+
+    it('should use POWERSHELL_PATH override when provided', (done) => {
+      process.env.POWERSHELL_PATH = 'custom-powershell.exe';
+      const stub = sandbox.stub(require('child_process'), 'execFile');
+
+      stub.callsArgWith(2, null, JSON.stringify([]), '');
+
+      wmic = require('../index.js');
+
+      setTimeout(() => {
+        assert.strictEqual(stub.getCall(0).args[0], 'custom-powershell.exe');
         done();
       }, 100);
     });
@@ -77,16 +98,14 @@ describe('node-wmic PowerShell Refactor', () => {
       const instanceStub = stub.onSecondCall();
       const mockInstance = { ProcessId: 1234, Name: 'test.exe' };
       instanceStub.callsArgWith(2, null, JSON.stringify([mockInstance]), '');
-
       wmic = require('../index.js');
-      
+
       setTimeout(() => {
-        assert(stub.calledWith(
-          sinon.match.any,
-          sinon.match.array.contains(['-NoProfile', '-Command', sinon.match('Get-CimClass')]),
-          sinon.match.func
-        ), 'Should call Get-CimClass for discovery');
-        done();
+        wmic.Win32_Process().then(() => {
+          assert(stub.firstCall.args[1][2].includes('Get-CimClass'), 'Should call Get-CimClass for discovery');
+          assert(stub.secondCall.args[1][2].includes("Get-CimInstance -ClassName 'Win32_Process'"), 'Should call Get-CimInstance for retrieval');
+          done();
+        }).catch(done);
       }, 100);
     });
 
@@ -160,6 +179,8 @@ describe('node-wmic PowerShell Refactor', () => {
     it('should reject promise on execution error', (done) => {
       const stub = sandbox.stub(require('child_process'), 'execFile');
       
+      process.env.POWERSHELL_PATH = 'custom-powershell.exe';
+
       const classListCall = stub.onFirstCall();
       classListCall.callsArgWith(2, null, JSON.stringify(['Win32_Process']), '');
       
@@ -282,6 +303,21 @@ describe('node-wmic PowerShell Refactor', () => {
         } else {
           done();
         }
+      }, 100);
+    });
+
+    it('should fall back to powershell.exe when pwsh.exe fails', (done) => {
+      const stub = sandbox.stub(require('child_process'), 'execFile');
+
+      stub.onFirstCall().callsArgWith(2, new Error('pwsh missing'), '', '');
+      stub.onSecondCall().callsArgWith(2, null, JSON.stringify(['Win32_Process']), '');
+
+      wmic = require('../index.js');
+
+      setTimeout(() => {
+        assert.strictEqual(stub.firstCall.args[0], 'pwsh.exe');
+        assert.strictEqual(stub.secondCall.args[0], 'powershell.exe');
+        done();
       }, 100);
     });
   });
