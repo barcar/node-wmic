@@ -27,12 +27,14 @@ const parseCimInstance = stdout => {
 };
 
 const buildPowershellArgs = command => ['-NoProfile', '-Command', command];
+const shouldFallbackToWindowsPowerShell = err =>
+  defaultPowershell === 'pwsh.exe' && err && err.code === 'ENOENT';
 
 const runPowerShellSync = command => {
   try {
     return execFileSync(defaultPowershell, buildPowershellArgs(command), { encoding: 'utf8' });
   } catch (err) {
-    if (defaultPowershell !== 'pwsh.exe') {
+    if (!shouldFallbackToWindowsPowerShell(err)) {
       throw err;
     }
 
@@ -42,7 +44,7 @@ const runPowerShellSync = command => {
 
 const runPowerShell = (command, callback) => {
   execFile(defaultPowershell, buildPowershellArgs(command), (err, stdout, stderr) => {
-    if (defaultPowershell === 'pwsh.exe' && err) {
+    if (shouldFallbackToWindowsPowerShell(err)) {
       execFile(fallbackPowershell, buildPowershellArgs(command), callback);
       return;
     }

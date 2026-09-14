@@ -100,7 +100,9 @@ describe('node-wmic PowerShell Refactor', () => {
 
     it('should fall back to powershell.exe when pwsh.exe discovery fails', () => {
       const execFileSyncStub = sandbox.stub(childProcess, 'execFileSync');
-      execFileSyncStub.onFirstCall().throws(new Error('pwsh missing'));
+      const error = new Error('pwsh missing');
+      error.code = 'ENOENT';
+      execFileSyncStub.onFirstCall().throws(error);
       execFileSyncStub.onSecondCall().returns(JSON.stringify(['Win32_Process']));
       sandbox.stub(childProcess, 'execFile');
 
@@ -173,7 +175,9 @@ describe('node-wmic PowerShell Refactor', () => {
     it('should fall back to powershell.exe when pwsh.exe instance query fails', async () => {
       stubDiscovery(['Win32_Process']);
       const execFileStub = sandbox.stub(childProcess, 'execFile');
-      execFileStub.onFirstCall().callsArgWith(2, new Error('pwsh missing'), '', '');
+      const error = new Error('pwsh missing');
+      error.code = 'ENOENT';
+      execFileStub.onFirstCall().callsArgWith(2, error, '', '');
       execFileStub.onSecondCall().callsArgWith(2, null, JSON.stringify([]), '');
 
       loadModule();
@@ -196,6 +200,17 @@ describe('node-wmic PowerShell Refactor', () => {
       loadModule();
 
       await assert.rejects(wmic.Win32_Process(), /PowerShell execution failed/);
+    });
+
+    it('should not retry powershell.exe for non-launch pwsh.exe errors', async () => {
+      stubDiscovery(['Win32_Process']);
+      const execFileStub = sandbox.stub(childProcess, 'execFile');
+      execFileStub.onFirstCall().callsArgWith(2, new Error('Query failed'), '', '');
+
+      loadModule();
+
+      await assert.rejects(wmic.Win32_Process(), /Query failed/);
+      assert.strictEqual(execFileStub.callCount, 1);
     });
 
     it('should reject promise on stderr', async () => {
