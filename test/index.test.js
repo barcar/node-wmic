@@ -95,6 +95,7 @@ describe('node-wmic PowerShell Refactor', () => {
       loadModule();
 
       assert(execFileSyncStub.firstCall.args[1][2].includes("Get-CimClass -Namespace 'root\\custom'"));
+      assert(execFileSyncStub.firstCall.args[1][2].includes("Where-Object { $_.CimClassName -like 'Win32_*' }"));
     });
 
     it('should fall back to powershell.exe when pwsh.exe discovery fails', () => {
@@ -182,18 +183,6 @@ describe('node-wmic PowerShell Refactor', () => {
       assert.strictEqual(execFileStub.secondCall.args[0], 'powershell.exe');
     });
 
-    it('should fall back to powershell.exe when pwsh.exe returns only stderr', async () => {
-      stubDiscovery(['Win32_Process']);
-      const execFileStub = sandbox.stub(childProcess, 'execFile');
-      execFileStub.onFirstCall().callsArgWith(2, null, '', 'pwsh failed');
-      execFileStub.onSecondCall().callsArgWith(2, null, JSON.stringify([]), '');
-
-      loadModule();
-      await wmic.Win32_Process();
-
-      assert.strictEqual(execFileStub.firstCall.args[0], 'pwsh.exe');
-      assert.strictEqual(execFileStub.secondCall.args[0], 'powershell.exe');
-    });
   });
 
   describe('Error Handling', () => {

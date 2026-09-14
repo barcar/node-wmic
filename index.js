@@ -42,7 +42,7 @@ const runPowerShellSync = command => {
 
 const runPowerShell = (command, callback) => {
   execFile(defaultPowershell, buildPowershellArgs(command), (err, stdout, stderr) => {
-    if (defaultPowershell === 'pwsh.exe' && (err || (stderr && !String(stdout).trim()))) {
+    if (defaultPowershell === 'pwsh.exe' && err) {
       execFile(fallbackPowershell, buildPowershellArgs(command), callback);
       return;
     }
@@ -54,7 +54,9 @@ const runPowerShell = (command, callback) => {
 const getClassList = () =>
   parseClassList(
     runPowerShellSync(
-      `Get-CimClass -Namespace '${escapePowerShellString(cimNamespace)}' | Select-Object -ExpandProperty CimClassName | ConvertTo-Json -Compress`
+      `Get-CimClass -Namespace '${escapePowerShellString(cimNamespace)}' | ` +
+      "Where-Object { $_.CimClassName -like 'Win32_*' } | " +
+      'Select-Object -ExpandProperty CimClassName | ConvertTo-Json -Compress'
     )
   );
 
