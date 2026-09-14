@@ -1,19 +1,32 @@
 const assert = require('assert');
-const { execFile } = require('child_process');
 const sinon = require('sinon');
 
-// Mock the child_process module
 let wmic;
 
 describe('node-wmic PowerShell Refactor', () => {
   let sandbox;
+  let childProcess;
   const originalPowerShellPath = process.env.POWERSHELL_PATH;
+  const originalCimNamespace = process.env.POWERSHELL_CIM_NAMESPACE;
+
+  const clearModule = () => {
+    delete require.cache[require.resolve('../index.js')];
+  };
+
+  const loadModule = classList => {
+    clearModule();
+    wmic = require('../index.js');
+    return wmic;
+  };
+
+  const stubDiscovery = classList => sandbox.stub(childProcess, 'execFileSync').returns(JSON.stringify(classList));
 
   beforeEach(() => {
     sandbox = sinon.createSandbox();
+    childProcess = require('child_process');
     delete process.env.POWERSHELL_PATH;
-    // Clear the require cache to reload the module with mocked execFile
-    delete require.cache[require.resolve('../index.js')];
+    delete process.env.POWERSHELL_CIM_NAMESPACE;
+    clearModule();
   });
 
   afterEach(() => {
@@ -22,303 +35,222 @@ describe('node-wmic PowerShell Refactor', () => {
     } else {
       process.env.POWERSHELL_PATH = originalPowerShellPath;
     }
+
+    if (originalCimNamespace === undefined) {
+      delete process.env.POWERSHELL_CIM_NAMESPACE;
+    } else {
+      process.env.POWERSHELL_CIM_NAMESPACE = originalCimNamespace;
+    }
+
     sandbox.restore();
+    clearModule();
   });
 
   describe('PowerShell CIM Class Discovery', () => {
-    it('should discover available CIM classes', (done) => {
-      const stub = sandbox.stub(require('child_process'), 'execFile');
-      
-      const mockClasses = ['Win32_Process', 'Win32_ComputerSystem', 'Win32_OperatingSystem'];
-      stub.withArgs(sinon.match.any, sinon.match.array.contains(['-NoProfile']), sinon.match.func)
-        .callsArgWith(2, null, JSON.stringify(mockClasses), '');
+    it('should discover available CIM classes', () => {
+      const execFileSyncStub = stubDiscovery(['Win32_Process', 'Win32_ComputerSystem', 'Win32_OperatingSystem']);
+      sandbox.stub(childProcess, 'execFile');
 
-      wmic = require('../index.js');
-      
-      // Give async initialization time to complete
-      setTimeout(() => {
-        assert(stub.called, 'execFile should be called');
-        assert(Object.keys(wmic).length > 0, 'CIM classes should be discovered');
-        done();
-      }, 100);
+      loadModule();
+
+      assert(execFileSyncStub.calledOnce, 'execFileSync should be called');
+      assert.strictEqual(typeof wmic.Win32_Process, 'function');
+      assert.strictEqual(typeof wmic.Win32_ComputerSystem, 'function');
     });
 
-    it('should handle single CIM class result', (done) => {
-      const stub = sandbox.stub(require('child_process'), 'execFile');
-      
-      stub.withArgs(sinon.match.any, sinon.match.array.contains(['-NoProfile']), sinon.match.func)
-        .callsArgWith(2, null, JSON.stringify('Win32_Process'), '');
+    it('should handle single CIM class result', () => {
+      stubDiscovery('Win32_Process');
+      sandbox.stub(childProcess, 'execFile');
 
-      wmic = require('../index.js');
-      
-      setTimeout(() => {
-        assert(stub.called, 'execFile should be called');
-        done();
-      }, 100);
+      loadModule();
+
+      assert.strictEqual(typeof wmic.Win32_Process, 'function');
     });
 
-    it('should use PowerShell instead of WMIC', (done) => {
-      const stub = sandbox.stub(require('child_process'), 'execFile');
-      
-      stub.callsArgWith(2, null, JSON.stringify([]), '');
+    it('should use PowerShell instead of WMIC', () => {
+      const execFileSyncStub = stubDiscovery([]);
+      sandbox.stub(childProcess, 'execFile');
 
-      wmic = require('../index.js');
-      
-      setTimeout(() => {
-        const callArgs = stub.getCall(0).args;
-        const psPath = callArgs[0];
-        assert(['pwsh.exe', 'powershell.exe'].includes(psPath), 'Should use a PowerShell executable');
-        assert(!psPath.includes('WMIC'), 'Should not use WMIC');
-        done();
-      }, 100);
+      loadModule();
+
+      assert(['pwsh.exe', 'powershell.exe'].includes(execFileSyncStub.firstCall.args[0]), 'Should use a PowerShell executable');
+      assert(!execFileSyncStub.firstCall.args[0].includes('WMIC'), 'Should not use WMIC');
     });
 
-    it('should use POWERSHELL_PATH override when provided', (done) => {
+    it('should use POWERSHELL_PATH override when provided', () => {
       process.env.POWERSHELL_PATH = 'custom-powershell.exe';
-      const stub = sandbox.stub(require('child_process'), 'execFile');
+      const execFileSyncStub = stubDiscovery([]);
+      sandbox.stub(childProcess, 'execFile');
 
-      stub.callsArgWith(2, null, JSON.stringify([]), '');
+      loadModule();
 
-      wmic = require('../index.js');
+      assert.strictEqual(execFileSyncStub.firstCall.args[0], 'custom-powershell.exe');
+    });
 
-      setTimeout(() => {
-        assert.strictEqual(stub.getCall(0).args[0], 'custom-powershell.exe');
-        done();
-      }, 100);
+    it('should use configured CIM namespace for discovery', () => {
+      process.env.POWERSHELL_CIM_NAMESPACE = 'root\\custom';
+      const execFileSyncStub = stubDiscovery([]);
+      sandbox.stub(childProcess, 'execFile');
+
+      loadModule();
+
+      assert(execFileSyncStub.firstCall.args[1][2].includes("Get-CimClass -Namespace 'root\\custom'"));
+    });
+
+    it('should fall back to powershell.exe when pwsh.exe discovery fails', () => {
+      const execFileSyncStub = sandbox.stub(childProcess, 'execFileSync');
+      execFileSyncStub.onFirstCall().throws(new Error('pwsh missing'));
+      execFileSyncStub.onSecondCall().returns(JSON.stringify(['Win32_Process']));
+      sandbox.stub(childProcess, 'execFile');
+
+      loadModule();
+
+      assert.strictEqual(execFileSyncStub.firstCall.args[0], 'pwsh.exe');
+      assert.strictEqual(execFileSyncStub.secondCall.args[0], 'powershell.exe');
+      assert.strictEqual(typeof wmic.Win32_Process, 'function');
     });
   });
 
   describe('CIM Instance Retrieval', () => {
-    it('should retrieve CIM instances with Get-CimInstance', (done) => {
-      const stub = sandbox.stub(require('child_process'), 'execFile');
-      
-      const classListStub = stub.onFirstCall();
-      classListStub.callsArgWith(2, null, JSON.stringify(['Win32_Process']), '');
-      
-      const instanceStub = stub.onSecondCall();
+    it('should retrieve CIM instances with Get-CimInstance', async () => {
+      stubDiscovery(['Win32_Process']);
+      const execFileStub = sandbox.stub(childProcess, 'execFile');
       const mockInstance = { ProcessId: 1234, Name: 'test.exe' };
-      instanceStub.callsArgWith(2, null, JSON.stringify([mockInstance]), '');
-      wmic = require('../index.js');
+      execFileStub.onFirstCall().callsArgWith(2, null, JSON.stringify([mockInstance]), '');
 
-      setTimeout(() => {
-        wmic.Win32_Process().then(() => {
-          assert(stub.firstCall.args[1][2].includes('Get-CimClass'), 'Should call Get-CimClass for discovery');
-          assert(stub.secondCall.args[1][2].includes("Get-CimInstance -ClassName 'Win32_Process'"), 'Should call Get-CimInstance for retrieval');
-          done();
-        }).catch(done);
-      }, 100);
+      loadModule();
+      await wmic.Win32_Process();
+
+      assert(execFileStub.firstCall.args[1][2].includes("Get-CimInstance -Namespace 'root\\cimv2' -ClassName 'Win32_Process'"));
     });
 
-    it('should return array of instances', (done) => {
-      const stub = sandbox.stub(require('child_process'), 'execFile');
-      
-      stub.withArgs(sinon.match.any, sinon.match.array.contains(['-NoProfile']), sinon.match.func)
-        .callsArgWith(2, null, JSON.stringify(['Win32_ComputerSystem']), '');
+    it('should return array of instances', async () => {
+      stubDiscovery(['Win32_ComputerSystem']);
+      const execFileStub = sandbox.stub(childProcess, 'execFile');
+      execFileStub.onFirstCall().callsArgWith(2, null, JSON.stringify([{ Name: 'MyComputer' }]), '');
 
-      wmic = require('../index.js');
-      
-      setTimeout(() => {
-        assert(stub.called, 'execFile should be called');
-        if (wmic.Win32_ComputerSystem) {
-          wmic.Win32_ComputerSystem().then(result => {
-            assert(Array.isArray(result), 'Result should be an array');
-            done();
-          }).catch(done);
-        } else {
-          done();
-        }
-      }, 100);
+      loadModule();
+      const result = await wmic.Win32_ComputerSystem();
+
+      assert(Array.isArray(result), 'Result should be an array');
     });
 
-    it('should normalize single instance to array', (done) => {
-      const stub = sandbox.stub(require('child_process'), 'execFile');
-      
-      const classListCall = stub.onFirstCall();
-      classListCall.callsArgWith(2, null, JSON.stringify(['Win32_ComputerSystem']), '');
-      
-      const instanceCall = stub.onSecondCall();
-      const mockInstance = { Name: 'MyComputer', Domain: 'example.com' };
-      instanceCall.callsArgWith(2, null, JSON.stringify(mockInstance), '');
+    it('should normalize single instance to array', async () => {
+      stubDiscovery(['Win32_ComputerSystem']);
+      const execFileStub = sandbox.stub(childProcess, 'execFile');
+      execFileStub.onFirstCall().callsArgWith(2, null, JSON.stringify({ Name: 'MyComputer', Domain: 'example.com' }), '');
 
-      wmic = require('../index.js');
-      
-      setTimeout(() => {
-        if (wmic.Win32_ComputerSystem) {
-          wmic.Win32_ComputerSystem().then(result => {
-            assert(Array.isArray(result), 'Single instance should be normalized to array');
-            assert.strictEqual(result[0].Name, 'MyComputer', 'Instance data should be preserved');
-            done();
-          }).catch(done);
-        } else {
-          done();
-        }
-      }, 100);
+      loadModule();
+      const result = await wmic.Win32_ComputerSystem();
+
+      assert(Array.isArray(result), 'Single instance should be normalized to array');
+      assert.strictEqual(result[0].Name, 'MyComputer', 'Instance data should be preserved');
     });
 
-    it('should use ConvertTo-Json for serialization', (done) => {
-      const stub = sandbox.stub(require('child_process'), 'execFile');
-      
-      stub.callsArgWith(2, null, JSON.stringify([]), '');
+    it('should use ConvertTo-Json for serialization', async () => {
+      stubDiscovery(['Win32_Process']);
+      const execFileStub = sandbox.stub(childProcess, 'execFile');
+      execFileStub.onFirstCall().callsArgWith(2, null, JSON.stringify([]), '');
 
-      wmic = require('../index.js');
-      
-      setTimeout(() => {
-        const calls = stub.getCalls();
-        const hasConvertToJson = calls.some(call => {
-          const args = call.args;
-          const command = args[1].join(' ');
-          return command.includes('ConvertTo-Json');
-        });
-        assert(hasConvertToJson, 'Should use ConvertTo-Json for serialization');
-        done();
-      }, 100);
+      loadModule();
+      await wmic.Win32_Process();
+
+      assert(execFileStub.firstCall.args[1][2].includes('ConvertTo-Json'));
+    });
+
+    it('should escape class names in the PowerShell command', async () => {
+      stubDiscovery(["Win32_O'Brien"]);
+      const execFileStub = sandbox.stub(childProcess, 'execFile');
+      execFileStub.onFirstCall().callsArgWith(2, null, JSON.stringify([]), '');
+
+      loadModule();
+      await wmic["Win32_O'Brien"]();
+
+      assert(execFileStub.firstCall.args[1][2].includes("-ClassName 'Win32_O''Brien'"));
+    });
+
+    it('should fall back to powershell.exe when pwsh.exe instance query fails', async () => {
+      stubDiscovery(['Win32_Process']);
+      const execFileStub = sandbox.stub(childProcess, 'execFile');
+      execFileStub.onFirstCall().callsArgWith(2, new Error('pwsh missing'), '', '');
+      execFileStub.onSecondCall().callsArgWith(2, null, JSON.stringify([]), '');
+
+      loadModule();
+      await wmic.Win32_Process();
+
+      assert.strictEqual(execFileStub.firstCall.args[0], 'pwsh.exe');
+      assert.strictEqual(execFileStub.secondCall.args[0], 'powershell.exe');
     });
   });
 
   describe('Error Handling', () => {
-    it('should reject promise on execution error', (done) => {
-      const stub = sandbox.stub(require('child_process'), 'execFile');
-      
+    it('should reject promise on execution error', async () => {
       process.env.POWERSHELL_PATH = 'custom-powershell.exe';
-
-      const classListCall = stub.onFirstCall();
-      classListCall.callsArgWith(2, null, JSON.stringify(['Win32_Process']), '');
-      
-      const instanceCall = stub.onSecondCall();
+      stubDiscovery(['Win32_Process']);
+      const execFileStub = sandbox.stub(childProcess, 'execFile');
       const error = new Error('PowerShell execution failed');
-      instanceCall.callsArgWith(2, error, '', '');
+      execFileStub.onFirstCall().callsArgWith(2, error, '', '');
 
-      wmic = require('../index.js');
-      
-      setTimeout(() => {
-        if (wmic.Win32_Process) {
-          wmic.Win32_Process().then(() => {
-            done(new Error('Should have rejected'));
-          }).catch(err => {
-            assert(err.message.includes('PowerShell execution failed'), 'Should catch execution error');
-            done();
-          });
-        } else {
-          done();
-        }
-      }, 100);
+      loadModule();
+
+      await assert.rejects(wmic.Win32_Process(), /PowerShell execution failed/);
     });
 
-    it('should reject promise on stderr', (done) => {
-      const stub = sandbox.stub(require('child_process'), 'execFile');
-      
-      const classListCall = stub.onFirstCall();
-      classListCall.callsArgWith(2, null, JSON.stringify(['Win32_Process']), '');
-      
-      const instanceCall = stub.onSecondCall();
-      instanceCall.callsArgWith(2, null, '', 'Class not found');
+    it('should reject promise on stderr', async () => {
+      stubDiscovery(['Win32_Process']);
+      const execFileStub = sandbox.stub(childProcess, 'execFile');
+      execFileStub.onFirstCall().callsArgWith(2, null, '', 'Class not found');
 
-      wmic = require('../index.js');
-      
-      setTimeout(() => {
-        if (wmic.Win32_Process) {
-          wmic.Win32_Process().then(() => {
-            done(new Error('Should have rejected'));
-          }).catch(err => {
-            assert.strictEqual(err, 'Class not found', 'Should catch stderr');
-            done();
-          });
-        } else {
-          done();
-        }
-      }, 100);
+      loadModule();
+
+      await assert.rejects(wmic.Win32_Process(), err => err === 'Class not found');
     });
 
-    it('should reject promise on invalid JSON', (done) => {
-      const stub = sandbox.stub(require('child_process'), 'execFile');
-      
-      const classListCall = stub.onFirstCall();
-      classListCall.callsArgWith(2, null, JSON.stringify(['Win32_Process']), '');
-      
-      const instanceCall = stub.onSecondCall();
-      instanceCall.callsArgWith(2, null, 'invalid json {{{', '');
+    it('should reject promise on invalid JSON', async () => {
+      stubDiscovery(['Win32_Process']);
+      const execFileStub = sandbox.stub(childProcess, 'execFile');
+      execFileStub.onFirstCall().callsArgWith(2, null, 'invalid json {{{', '');
 
-      wmic = require('../index.js');
-      
-      setTimeout(() => {
-        if (wmic.Win32_Process) {
-          wmic.Win32_Process().then(() => {
-            done(new Error('Should have rejected'));
-          }).catch(err => {
-            assert(err instanceof SyntaxError, 'Should catch JSON parse error');
-            done();
-          });
-        } else {
-          done();
-        }
-      }, 100);
+      loadModule();
+
+      await assert.rejects(wmic.Win32_Process(), SyntaxError);
     });
 
-    it('should handle class discovery failure gracefully', (done) => {
-      const stub = sandbox.stub(require('child_process'), 'execFile');
-      
-      const classListCall = stub.onFirstCall();
-      classListCall.callsArgWith(2, new Error('Failed to discover classes'), '', '');
+    it('should handle class discovery failure gracefully', () => {
+      const execFileSyncStub = sandbox.stub(childProcess, 'execFileSync').throws(new Error('Failed to discover classes'));
+      sandbox.stub(childProcess, 'execFile');
+      const consoleErrorStub = sandbox.stub(console, 'error');
 
-      wmic = require('../index.js');
-      
-      // Should not throw, but log error
-      setTimeout(() => {
-        assert(stub.called, 'Execution should be attempted');
-        done();
-      }, 100);
+      loadModule();
+
+      assert(execFileSyncStub.called, 'Class discovery should be attempted');
+      assert(consoleErrorStub.calledOnce);
+      assert.strictEqual(typeof wmic, 'object');
     });
   });
 
   describe('API Compatibility', () => {
-    it('should export object with class methods', (done) => {
-      const stub = sandbox.stub(require('child_process'), 'execFile');
-      
-      stub.callsArgWith(2, null, JSON.stringify(['Win32_Process', 'Win32_Service']), '');
+    it('should export object with class methods ready synchronously', () => {
+      stubDiscovery(['Win32_Process', 'Win32_Service']);
+      sandbox.stub(childProcess, 'execFile');
 
-      wmic = require('../index.js');
-      
-      setTimeout(() => {
-        assert(typeof wmic === 'object', 'Should export an object');
-        done();
-      }, 100);
+      loadModule();
+
+      assert.strictEqual(typeof wmic, 'object', 'Should export an object');
+      assert.strictEqual(typeof wmic.Win32_Process, 'function');
+      assert.strictEqual(typeof wmic.Win32_Service, 'function');
     });
 
-    it('should provide promise-based API', (done) => {
-      const stub = sandbox.stub(require('child_process'), 'execFile');
-      
-      const classListCall = stub.onFirstCall();
-      classListCall.callsArgWith(2, null, JSON.stringify(['Win32_Process']), '');
-      
-      const instanceCall = stub.onSecondCall();
-      instanceCall.callsArgWith(2, null, JSON.stringify([]), '');
+    it('should provide promise-based API', () => {
+      stubDiscovery(['Win32_Process']);
+      const execFileStub = sandbox.stub(childProcess, 'execFile');
+      execFileStub.onFirstCall().callsArgWith(2, null, JSON.stringify([]), '');
 
-      wmic = require('../index.js');
-      
-      setTimeout(() => {
-        if (wmic.Win32_Process) {
-          const result = wmic.Win32_Process();
-          assert(result instanceof Promise, 'Methods should return promises');
-          done();
-        } else {
-          done();
-        }
-      }, 100);
-    });
+      loadModule();
 
-    it('should fall back to powershell.exe when pwsh.exe fails', (done) => {
-      const stub = sandbox.stub(require('child_process'), 'execFile');
-
-      stub.onFirstCall().callsArgWith(2, new Error('pwsh missing'), '', '');
-      stub.onSecondCall().callsArgWith(2, null, JSON.stringify(['Win32_Process']), '');
-
-      wmic = require('../index.js');
-
-      setTimeout(() => {
-        assert.strictEqual(stub.firstCall.args[0], 'pwsh.exe');
-        assert.strictEqual(stub.secondCall.args[0], 'powershell.exe');
-        done();
-      }, 100);
+      const result = wmic.Win32_Process();
+      assert(result instanceof Promise, 'Methods should return promises');
+      return result;
     });
   });
 });

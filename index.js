@@ -1,93 +1,79 @@
 const { execFile, execFileSync } = require('child_process');
-const iconv = require('iconv-lite');
 
-// Use PowerShell instead of deprecated WMIC
-// Prefer PowerShell 7+ (pwsh) but fall back to Windows PowerShell (powershell.exe)
-// Allow override via POWERSHELL_PATH environment variable
-const powershell = process.env.POWERSHELL_PATH || 'pwsh.exe';
+const defaultPowershell = process.env.POWERSHELL_PATH || 'pwsh.exe';
 const fallbackPowershell = 'powershell.exe';
+const cimNamespace = process.env.POWERSHELL_CIM_NAMESPACE || 'root\\cimv2';
 
-// Get list of CIM classes available
-const getClassList = () => {
-  return new Promise((resolve, reject) => {
-    const psCommand = "Get-CimClass -Namespace 'root\\cimv2' | Select-Object -ExpandProperty CimClassName | ConvertTo-Json";
-    
-    execFile(powershell, ['-NoProfile', '-Command', psCommand], (err, stdout, stderr) => {
-      // If pwsh.exe fails, try fallback to powershell.exe
-      if (err && powershell === 'pwsh.exe') {
-        execFile(fallbackPowershell, ['-NoProfile', '-Command', psCommand], (err2, stdout2, stderr2) => {
-          if (err2 || stderr2) {
-            reject(err2 || stderr2);
-            return;
-          }
-          parseClassList(stdout2, resolve, reject);
-        });
-        return;
-      }
+const escapePowerShellString = value => String(value).replace(/'/g, "''");
 
-      if (err || stderr) {
-        reject(err || stderr);
-        return;
-      }
-
-      parseClassList(stdout, resolve, reject);
-    });
-  });
+const parseClassList = stdout => {
+  const classes = JSON.parse(String(stdout).trim());
+  return Array.isArray(classes) ? classes : [classes];
 };
 
-const parseClassList = (stdout, resolve, reject) => {
+const parseCimInstance = stdout => {
+  const result = JSON.parse(String(stdout).trim());
+  return Array.isArray(result) ? result : [result];
+};
+
+const buildPowershellArgs = command => ['-NoProfile', '-Command', command];
+
+const runPowerShellSync = command => {
   try {
-    const classes = JSON.parse(stdout.trim());
-    resolve(Array.isArray(classes) ? classes : [classes]);
-  } catch (e) {
-    reject(e);
+    return execFileSync(defaultPowershell, buildPowershellArgs(command), { encoding: 'utf8' });
+  } catch (err) {
+    if (defaultPowershell !== 'pwsh.exe') {
+      throw err;
+    }
+
+    return execFileSync(fallbackPowershell, buildPowershellArgs(command), { encoding: 'utf8' });
   }
 };
 
+const runPowerShell = (command, callback) => {
+  execFile(defaultPowershell, buildPowershellArgs(command), (err, stdout, stderr) => {
+    if (err && defaultPowershell === 'pwsh.exe') {
+      execFile(fallbackPowershell, buildPowershellArgs(command), callback);
+      return;
+    }
+
+    callback(err, stdout, stderr);
+  });
+};
+
+const getClassList = () =>
+  parseClassList(
+    runPowerShellSync(
+      `Get-CimClass -Namespace '${escapePowerShellString(cimNamespace)}' | Select-Object -ExpandProperty CimClassName | ConvertTo-Json`
+    )
+  );
+
 const data = {};
 
-// Build async wrapper for each CIM class
-getClassList().then(classList => {
-  for (let className of classList) {
+try {
+  for (const className of getClassList()) {
     data[className] = () =>
       new Promise((resolve, reject) => {
-        const psCommand = `Get-CimInstance -ClassName '${className}' | ConvertTo-Json -Depth 10`;
-        
-        execFile(powershell, ['-NoProfile', '-Command', psCommand], (err, stdout, stderr) => {
-          // If pwsh.exe fails, try fallback to powershell.exe
-          if (err && powershell === 'pwsh.exe') {
-            execFile(fallbackPowershell, ['-NoProfile', '-Command', psCommand], (err2, stdout2, stderr2) => {
-              if (err2 || stderr2) {
-                reject(err2 || stderr2);
-                return;
-              }
-              parseCimInstance(stdout2, resolve, reject);
-            });
-            return;
-          }
+        const psCommand =
+          `Get-CimInstance -Namespace '${escapePowerShellString(cimNamespace)}' ` +
+          `-ClassName '${escapePowerShellString(className)}' | ConvertTo-Json -Depth 10`;
 
+        runPowerShell(psCommand, (err, stdout, stderr) => {
           if (err || stderr) {
             reject(err || stderr);
             return;
           }
 
-          parseCimInstance(stdout, resolve, reject);
+          try {
+            resolve(parseCimInstance(stdout));
+          } catch (parseError) {
+            reject(parseError);
+          }
         });
       });
   }
-}).catch(err => {
+} catch (err) {
   console.error('Failed to initialize CIM classes:', err);
-});
-
-const parseCimInstance = (stdout, resolve, reject) => {
-  try {
-    const result = JSON.parse(stdout.trim());
-    // Normalize to array format for consistency with original
-    const jsonGroup = Array.isArray(result) ? result : [result];
-    resolve(jsonGroup);
-  } catch (e) {
-    reject(e);
-  }
-};
+}
 
 module.exports = data;
