@@ -5,6 +5,13 @@
   "dependencies": {
     "iconv-lite": "^0.4.13"
   },
+  "devDependencies": {
+    "mocha": "^10.2.0",
+    "sinon": "^15.2.0"
+  },
+  "scripts": {
+    "test": "mocha test/**/*.test.js"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ruiming/node-wmic.git"
