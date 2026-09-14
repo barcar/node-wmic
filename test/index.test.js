@@ -197,6 +197,7 @@ describe('node-wmic PowerShell Refactor', () => {
     });
 
     it('should reject promise on stderr', async () => {
+      process.env.POWERSHELL_PATH = 'custom-powershell.exe';
       stubDiscovery(['Win32_Process']);
       const execFileStub = sandbox.stub(childProcess, 'execFile');
       execFileStub.onFirstCall().callsArgWith(2, null, '', 'Class not found');
@@ -216,16 +217,21 @@ describe('node-wmic PowerShell Refactor', () => {
       await assert.rejects(wmic.Win32_Process(), SyntaxError);
     });
 
-    it('should handle class discovery failure gracefully', () => {
-      const execFileSyncStub = sandbox.stub(childProcess, 'execFileSync').throws(new Error('Failed to discover classes'));
-      sandbox.stub(childProcess, 'execFile');
-      const consoleErrorStub = sandbox.stub(console, 'error');
+    it('should return empty array when PowerShell returns no results', async () => {
+      stubDiscovery(['Win32_Process']);
+      const execFileStub = sandbox.stub(childProcess, 'execFile');
+      execFileStub.onFirstCall().callsArgWith(2, null, '', '');
 
       loadModule();
 
-      assert(execFileSyncStub.called, 'Class discovery should be attempted');
-      assert(consoleErrorStub.calledOnce);
-      assert.strictEqual(typeof wmic, 'object');
+      assert.deepStrictEqual(await wmic.Win32_Process(), []);
+    });
+
+    it('should handle class discovery failure by throwing during require', () => {
+      sandbox.stub(childProcess, 'execFileSync').throws(new Error('Failed to discover classes'));
+      sandbox.stub(childProcess, 'execFile');
+
+      assert.throws(() => loadModule(), /Failed to discover classes/);
     });
   });
 
