@@ -42,7 +42,7 @@ const runPowerShellSync = command => {
 
 const runPowerShell = (command, callback) => {
   execFile(defaultPowershell, buildPowershellArgs(command), (err, stdout, stderr) => {
-    if ((err || stderr) && defaultPowershell === 'pwsh.exe') {
+    if (defaultPowershell === 'pwsh.exe' && (err || (stderr && !String(stdout).trim()))) {
       execFile(fallbackPowershell, buildPowershellArgs(command), callback);
       return;
     }
@@ -54,7 +54,7 @@ const runPowerShell = (command, callback) => {
 const getClassList = () =>
   parseClassList(
     runPowerShellSync(
-      `Get-CimClass -Namespace '${escapePowerShellString(cimNamespace)}' | Select-Object -ExpandProperty CimClassName | ConvertTo-Json`
+      `Get-CimClass -Namespace '${escapePowerShellString(cimNamespace)}' | Select-Object -ExpandProperty CimClassName | ConvertTo-Json -Compress`
     )
   );
 
@@ -65,7 +65,7 @@ for (const className of getClassList()) {
     new Promise((resolve, reject) => {
       const psCommand =
         `Get-CimInstance -Namespace '${escapePowerShellString(cimNamespace)}' ` +
-        `-ClassName '${escapePowerShellString(className)}' | ConvertTo-Json -Depth 10`;
+        `-ClassName '${escapePowerShellString(className)}' | ConvertTo-Json -Depth 10 -Compress`;
 
       runPowerShell(psCommand, (err, stdout, stderr) => {
         if (err || stderr) {
